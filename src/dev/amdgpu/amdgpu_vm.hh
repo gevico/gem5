@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "arch/amdgpu/vega/pagetable_walker.hh"
+#include "base/bitfield.hh"
 #include "base/intmath.hh"
 #include "dev/amdgpu/amdgpu_defines.hh"
 #include "mem/packet.hh"
@@ -312,13 +313,15 @@ class AMDGPUVM : public Serializable
     void
     setPageTableBase(uint16_t vmid, Addr ptBase)
     {
-        vmContexts[vmid].ptBase = ptBase;
+        // Clear extra bits not part of the address.
+        vmContexts[vmid].ptBase = insertBits(ptBase, 0, 0, 0);
     }
 
     void
     setPageTableBaseL(uint16_t vmid, uint32_t ptBaseL)
     {
-        vmContexts[vmid].ptBaseL = ptBaseL;
+        // Clear extra bits not part of the address.
+        vmContexts[vmid].ptBaseL = insertBits(ptBaseL, 0, 0, 0);
     }
 
     void

@@ -302,6 +302,18 @@ HSAPacketProcessor::schedAQLProcessing(uint32_t rl_idx)
     schedAQLProcessing(rl_idx, pktProcessDelay);
 }
 
+void
+HSAPacketProcessor::cancelAQLProcessing(uint32_t rl_idx)
+{
+    auto &event = regdQList.at(rl_idx)->aqlProcessEvent;
+    if (event.scheduled()) {
+        deschedule(event);
+        DPRINTF(HSAPacketProcessor,
+                "AQL processing cancelled for registered list ID = %d\n",
+                rl_idx);
+    }
+}
+
 Q_STATE
 HSAPacketProcessor::processPkt(void* pkt, uint32_t rl_idx, Addr host_pkt_addr)
 {
@@ -474,6 +486,11 @@ HSAPacketProcessor::processPkt(void* pkt, uint32_t rl_idx, Addr host_pkt_addr)
 void
 HSAPacketProcessor::QueueProcessEvent::process()
 {
+    if (!hsaPP->hasQueueContext(rqIdx)) {
+        warn("Dropping AQL processing for torn-down HSA queue %u", rqIdx);
+        return;
+    }
+
     AQLRingBuffer *aqlRingBuffer = hsaPP->regdQList[rqIdx]->qCntxt.aqlBuf;
     DPRINTF(HSAPacketProcessor,
             "%s: Qwakeup , rdIdx %d, wrIdx %d," \

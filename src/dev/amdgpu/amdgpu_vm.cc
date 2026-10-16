@@ -407,7 +407,8 @@ AMDGPUVM::unserialize(CheckpointIn &cp)
     UNSERIALIZE_SCALAR(vm0PTBase);
     UNSERIALIZE_SCALAR(vm0PTStart);
     UNSERIALIZE_SCALAR(vm0PTEnd);
-    vmContext0.ptBase = vm0PTBase;
+    // Clear extra bits not part of the address.
+    vmContext0.ptBase = insertBits(vm0PTBase, 0, 0, 0);
     vmContext0.ptStart = vm0PTStart;
     vmContext0.ptEnd = vm0PTEnd;
 
@@ -430,7 +431,8 @@ AMDGPUVM::unserialize(CheckpointIn &cp)
     UNSERIALIZE_ARRAY(ptStart, AMDGPU_VM_COUNT);
     UNSERIALIZE_ARRAY(ptEnd, AMDGPU_VM_COUNT);
     for (int i = 0; i < AMDGPU_VM_COUNT; i++) {
-        vmContexts[i].ptBase = ptBase[i];
+        // Clear extra bits not part of the address.
+        vmContexts[i].ptBase = insertBits(ptBase[i], 0, 0, 0);
         vmContexts[i].ptStart = ptStart[i];
         vmContexts[i].ptEnd = ptEnd[i];
     }
