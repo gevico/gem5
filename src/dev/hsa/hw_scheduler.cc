@@ -309,6 +309,10 @@ HWScheduler::isRLQIdle(uint32_t rl_idx)
             "@ %s, analyzing hw queue %d\n", __FUNCTION__, rl_idx);
     HSAQueueDescriptor* qDesc = hsaPP->getRegdListEntry(rl_idx)->qCntxt.qDesc;
 
+    if (hsaPP->isAQLProcessingScheduled(rl_idx)) {
+        return false;
+    }
+
     // If there a pending DMA to this registered queue
     // then the queue is not idle
     if (qDesc->dmaInProgress) {
@@ -363,6 +367,10 @@ HWScheduler::unregisterQueue(uint64_t queue_id, int doorbellSize)
     }
     uint32_t al_idx = dbMap[db_offset];
     assert(dbMap[db_offset] == dbmap_iter->second);
+    auto regd_iter = regdListMap.find(al_idx);
+    if (regd_iter != regdListMap.end()) {
+        hsaPP->cancelAQLProcessing(regd_iter->second);
+    }
     if (!activeList[al_idx].qDesc->isEmpty()) {
         // According to HSA runtime specification says, deleting
         // a queue before it is fully processed can lead to undefined
@@ -378,14 +386,14 @@ HWScheduler::unregisterQueue(uint64_t queue_id, int doorbellSize)
     activeList.erase(al_idx);
     // Unmap doorbell from doorbell map
     dbMap.erase(db_offset);
-    if (regdListMap.find(al_idx) != regdListMap.end()) {
-        uint32_t rl_idx = regdListMap[al_idx];
+    if (regd_iter != regdListMap.end()) {
+        uint32_t rl_idx = regd_iter->second;
         hsaPP->getRegdListEntry(rl_idx)->qCntxt.aqlBuf = NULL;
         hsaPP->getRegdListEntry(rl_idx)->qCntxt.qDesc = NULL;
         hsaPP->getRegdListEntry(rl_idx)->depSignalRdState.discardRead = true;
         hsaPP->getRegdListEntry(rl_idx)->depSignalRdState.resetSigVals();
         assert(!hsaPP->getRegdListEntry(rl_idx)->aqlProcessEvent.scheduled());
-        regdListMap.erase(al_idx);
+        regdListMap.erase(regd_iter);
         // A registered queue is released, let us try to map
         // a queue to that slot
         contextSwitchQ();

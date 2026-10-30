@@ -336,6 +336,14 @@ class HSAPacketProcessor: public DmaVirtDevice
                regdQList[queId]->qCntxt.aqlBuf != nullptr;
     }
 
+    bool
+    isAQLProcessingScheduled(uint32_t queId) const
+    {
+        return regdQList.at(queId)->aqlProcessEvent.scheduled();
+    }
+
+    void cancelAQLProcessing(uint32_t queId);
+
     uint64_t
     inFlightPkts(uint32_t queId)
     {
