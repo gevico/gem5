@@ -32,6 +32,8 @@
 #ifndef __DEV_AMDGPU_AMDGPU_VM_HH__
 #define __DEV_AMDGPU_AMDGPU_VM_HH__
 
+#include <array>
+#include <map>
 #include <vector>
 
 #include "arch/amdgpu/vega/pagetable_walker.hh"
@@ -104,6 +106,10 @@
 #define MI300X_MEM_SIZE_REG                                          0x0378c
 #define MI300X_FB_LOCATION_BASE                                      0x63270
 #define MI300X_FB_LOCATION_TOP                                       0x63274
+// MMHUB 1.8 offsets relative to the model's 0x60d00 aperture.
+#define MI300X_MMHUB_VM_INVALIDATE_ENG0_SEM                          0x0871
+#define MI300X_MMHUB_VM_INVALIDATE_ENG0_REQ                          0x0883
+#define MI300X_MMHUB_VM_INVALIDATE_ENG0_ACK                          0x0895
 #define MI300X_VM_INVALIDATE_ENG17_ACK                                0x08a6
 
 // AMD GPUs support 16 different virtual address spaces
@@ -185,6 +191,10 @@ class AMDGPUVM : public Serializable
     AMDGPUSysVMContext vmContext0;
     std::vector<AMDGPUVMContext> vmContexts;
 
+    // Four MMHUBs in mi300_discovery, distinct from its eight GC instances.
+    // Independent register frontends use the shared translation VM above.
+    std::array<std::map<Addr, uint32_t>, 4> mmhubRegisters;
+
     // MMHUB aperture. These addresses mirror the framebuffer, so addresses
     // can be calculated by subtracting the base address.
     uint64_t mmhubBase = 0x0;
@@ -237,6 +247,9 @@ class AMDGPUVM : public Serializable
      */
     uint8_t *vramShmemPtr = nullptr;
     Addr vramShmemSize = 0;
+
+    // Handle a raw byte offset without changing its identity for other blocks.
+    bool accessMMHUB(PacketPtr pkt, Addr offset, bool write);
 
     void readMMIO(PacketPtr pkt, Addr offset);
     void writeMMIO(PacketPtr pkt, Addr offset);

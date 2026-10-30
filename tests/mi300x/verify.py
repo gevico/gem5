@@ -388,7 +388,7 @@ def main() -> None:
     parser.add_argument("--gem5", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
-        "--case", choices=["all", "named-multi-gpu"], default="all"
+        "--case", choices=["all", "named-multi-gpu", "mmhub"], default="all"
     )
     args = parser.parse_args()
     binary = args.gem5.resolve(strict=True)
@@ -399,6 +399,10 @@ def main() -> None:
         client = build_client(binary, output)
         if args.case == "named-multi-gpu":
             named_multi_gpu(binary, client, output / "named-multi-gpu")
+            result["status"] = "PASS"
+            return
+        if args.case == "mmhub":
+            startup(binary, client, output / "mmhub", 0)
             result["status"] = "PASS"
             return
         startup(binary, client, output / "q35", 0)

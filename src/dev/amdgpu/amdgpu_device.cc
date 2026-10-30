@@ -543,6 +543,10 @@ AMDGPUDevice::readMMIO(PacketPtr pkt, Addr offset)
     DPRINTF(AMDGPUDevice, "Read MMIO %#lx\n", offset);
     mmioReader.readFromTrace(pkt, MMIO_BAR, offset);
 
+    if (gpuvm.accessMMHUB(pkt, offset, false)) {
+        return;
+    }
+
     if (aperture == gpuvm.getMMIORange(NBIO_MMIO_RANGE)) {
         DPRINTF(AMDGPUDevice, "NBIO base\n");
         nbio.readMMIO(pkt, aperture_offset);
@@ -717,6 +721,10 @@ AMDGPUDevice::writeMMIO(PacketPtr pkt, Addr offset)
 
             return;
         }
+    }
+
+    if (gpuvm.accessMMHUB(pkt, offset, true)) {
+        return;
     }
 
     if (aperture == gpuvm.getMMIORange(GRBM_MMIO_RANGE)) {

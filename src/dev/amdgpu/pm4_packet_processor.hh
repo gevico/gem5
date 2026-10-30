@@ -68,7 +68,18 @@ class PM4PacketProcessor : public DmaVirtDevice
     AddrRange _mmioRange;
 
     void deallocateQueue(Addr doorbell);
+    bool isSDMAQueue(PM4MapQueues *pkt);
+    void mapHostQueue(PM4Queue *q, PM4MapQueues *pkt,
+                      uint16_t queue_vmid);
+    void mapDeviceQueue(PM4Queue *q, PM4MapQueues *pkt,
+                      uint16_t queue_vmid);
     void unmapAllQueues(bool unmap_static);
+
+    /*
+     * gem5 uses partial MQD for PM4 queues. It begin 96 dwords from the
+     * start of the full MQD structure. See src/dev/amdgpu/pm4_queues.hh.
+     */
+    static constexpr int pm4MqdOffset = 96 * sizeof(uint32_t);
 
   public:
     PM4PacketProcessor(const PM4PacketProcessorParams &p);
@@ -161,7 +172,8 @@ class PM4PacketProcessor : public DmaVirtDevice
     void processMQD(PM4MapQueues *pkt, PM4Queue *q, Addr addr, QueueDesc *mqd,
                     uint16_t vmid);
     void processSDMAMQD(PM4MapQueues *pkt, PM4Queue *q, Addr addr,
-                        SDMAQueueDesc *mqd, uint16_t vmid);
+                        SDMAQueueDesc *mqd, uint16_t vmid,
+                        bool isDeviceBacked = false);
     void releaseMem(PM4Queue *q, PM4ReleaseMem *pkt);
     void releaseMemDone(PM4Queue *q, PM4ReleaseMem *pkt, Addr addr);
     void runList(PM4Queue *q, PM4RunList *pkt);

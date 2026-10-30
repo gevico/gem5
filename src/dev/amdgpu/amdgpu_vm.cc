@@ -126,6 +126,91 @@ AMDGPUVM::gartSize()
     return vmContext0.ptEnd - vmContext0.ptStart;
 }
 
+bool
+AMDGPUVM::accessMMHUB(PacketPtr pkt, Addr offset, bool write)
+{
+    if (gpuDevice->getGfxVersion() != GfxVersion::gfx942) {
+        return false;
+    }
+
+    // MMHUB 1.8 instances in mi300_discovery have a 512 KiB byte stride.
+    constexpr Addr mmhubStride = 0x80000;
+    const auto instance = offset / mmhubStride;
+    const Addr local = offset % mmhubStride;
+    const auto &range = mmioRanges[MMHUB_MMIO_RANGE];
+    if (instance >= mmhubRegisters.size() || !range.contains(local)) {
+        return false;
+    }
+
+    const Addr reg = (local - range.start()) >> MMHUB_OFFSET_SHIFT;
+    auto &registers = mmhubRegisters[instance];
+    const bool sem = inRegisterRange(
+        reg, MI300X_MMHUB_VM_INVALIDATE_ENG0_SEM + kInvalidateEngineCount - 1);
+    const bool req = inRegisterRange(
+        reg, MI300X_MMHUB_VM_INVALIDATE_ENG0_REQ + kInvalidateEngineCount - 1);
+    const bool ack = inRegisterRange(
+        reg, MI300X_MMHUB_VM_INVALIDATE_ENG0_ACK + kInvalidateEngineCount - 1);
+
+    if (write) {
+        const uint32_t value = pkt->getLE<uint32_t>();
+        if (ack) {
+            return true; // ACK is read-only.
+        }
+        if (sem) {
+            if (value == 0) {
+                registers[reg] = 0; // Release an acquired semaphore.
+            }
+            return true;
+        }
+
+        const bool pageTable =
+            reg >= MI300X_CONTEXT0_PAGE_TABLE_BASE_ADDR_LO32 &&
+            reg <= MI300X_CONTEXT0_PAGE_TABLE_END_ADDR_HI32 +
+                   2 * (AMDGPU_VM_COUNT - 1);
+        const bool aperture = reg >= MI300X_VM_AGP_TOP &&
+                              reg <= MI300X_VM_SYSTEM_APERTURE_HIGH_ADDR;
+        // Preserve only modeled VM controls. In particular, keep read-only
+        // FB_LOCATION and unimplemented registers keep their trace behavior.
+        if (req || pageTable || aperture) {
+            registers[reg] = value;
+        }
+        if (req) {
+            const Addr ackReg = reg + MI300X_MMHUB_VM_INVALIDATE_ENG0_ACK -
+                                      MI300X_MMHUB_VM_INVALIDATE_ENG0_REQ;
+            registers[ackReg] = 0;
+            const uint16_t vmids = bits(value, AMDGPU_VM_COUNT - 1, 0);
+            // VMID0 reads the GART table directly; it has no compute TLB.
+            // User VMIDs share the compute TLB/PWC. Flush conservatively;
+            // the functional backend does not model invalidate latency.
+            if (vmids & ~1U) {
+                invalidateTLBs();
+            }
+            registers[ackReg] = vmids;
+            DPRINTF(AMDGPUDevice,
+                    "MMHUB%u invalidate engine %u request %#x ACK %#x\n",
+                    instance, reg - MI300X_MMHUB_VM_INVALIDATE_ENG0_REQ,
+                    value, registers[ackReg]);
+        } else {
+            // Retain per-instance readback, including the unmasked PT base.
+            // Frontends use a common VM configuration for translation.
+            writeMMIOGfx940(pkt, reg);
+        }
+    } else if (sem) {
+        auto &held = registers[reg];
+        pkt->setLE<uint32_t>(held ? 0 : 1);
+        held = 1;
+    } else if (ack) {
+        pkt->setLE<uint32_t>(registers[reg]);
+    } else {
+        auto it = registers.find(reg);
+        if (it != registers.end()) {
+            pkt->setLE<uint32_t>(it->second);
+        }
+        // Untouched registers retain the trace at the original address.
+    }
+    return true;
+}
+
 void
 AMDGPUVM::readMMIO(PacketPtr pkt, Addr offset)
 {
@@ -348,6 +433,20 @@ AMDGPUVM::setupWalkerCosim()
 void
 AMDGPUVM::serialize(CheckpointOut &cp) const
 {
+    for (unsigned i = 0; i < mmhubRegisters.size(); ++i) {
+        ScopedCheckpointSection section(cp, "mmhub" + std::to_string(i));
+        std::vector<Addr> addresses;
+        std::vector<uint32_t> values;
+        for (const auto &[address, value] : mmhubRegisters[i]) {
+            addresses.push_back(address);
+            values.push_back(value);
+        }
+        unsigned count = addresses.size();
+        SERIALIZE_SCALAR(count);
+        SERIALIZE_CONTAINER(addresses);
+        SERIALIZE_CONTAINER(values);
+    }
+
     Addr vm0PTBase = vmContext0.ptBase;
     Addr vm0PTStart = vmContext0.ptStart;
     Addr vm0PTEnd = vmContext0.ptEnd;
@@ -399,6 +498,24 @@ AMDGPUVM::serialize(CheckpointOut &cp) const
 void
 AMDGPUVM::unserialize(CheckpointIn &cp)
 {
+    for (unsigned i = 0; i < mmhubRegisters.size(); ++i) {
+        ScopedCheckpointSection section(cp, "mmhub" + std::to_string(i));
+        mmhubRegisters[i].clear();
+        unsigned count = 0;
+        // Older checkpoints predate per-MMHUB register state.
+        if (optParamIn(cp, "count", count, false)) {
+            std::vector<Addr> addresses;
+            std::vector<uint32_t> values;
+            UNSERIALIZE_CONTAINER(addresses);
+            UNSERIALIZE_CONTAINER(values);
+            fatal_if(addresses.size() != count || values.size() != count,
+                     "Invalid MMHUB checkpoint register count");
+            for (unsigned j = 0; j < count; ++j) {
+                mmhubRegisters[i][addresses[j]] = values[j];
+            }
+        }
+    }
+
     // Unserialize requires fields not be packed
     Addr vm0PTBase;
     Addr vm0PTStart;

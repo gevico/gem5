@@ -77,6 +77,7 @@ class SDMAEngine : public DmaVirtDevice
         bool _priv = true; // Only used for RLC queues. True otherwise.
         bool _static = false;
         uint16_t _vmid = 0;
+        bool _deviceBacked = false;
 
       public:
         SDMAQueue() : _rptr(0), _wptr(0), _valid(false), _processing(false),
@@ -144,6 +145,16 @@ class SDMAEngine : public DmaVirtDevice
         setVmid(uint16_t v)
         {
             _vmid = v;
+        }
+        void
+        setDeviceBacked(bool val)
+        {
+            _deviceBacked = val;
+        }
+        bool
+        isDeviceBacked()
+        {
+            return _deviceBacked;
         }
 
         // setGlobalRptr is only used during checkpoint restoration
@@ -342,7 +353,8 @@ class SDMAEngine : public DmaVirtDevice
      * Methods for RLC queues
      */
     void registerRLCQueue(Addr doorbell, Addr mqdAddr, SDMAQueueDesc *mqd,
-                          bool isStatic, uint16_t vmid);
+                          bool isStatic, uint16_t vmid,
+                          bool isDeviceBacked = false);
     void unregisterRLCQueue(Addr doorbell, bool unmap_static);
     void deallocateRLCQueues(bool unmap_static);
 

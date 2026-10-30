@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 
+#include <endian.h>
 #include <err.h>
 #include <fcntl.h>
 #include <stdbool.h>
@@ -40,11 +41,12 @@ negotiate(int sock)
 }
 
 static void
-access_bar(int sock, bool write, uint64_t offset, uint8_t *data, size_t size)
+access_bar(int sock, bool write, uint32_t region, uint64_t offset,
+           uint8_t *data, size_t size)
 {
     struct vfio_user_region_access request = {0};
     request.offset = offset;
-    request.region = VFU_PCI_DEV_BAR0_REGION_IDX;
+    request.region = region;
     request.count = size;
     struct iovec vectors[3] = {0};
     vectors[1].iov_base = &request;
@@ -60,15 +62,126 @@ access_bar(int sock, bool write, uint64_t offset, uint8_t *data, size_t size)
             sock, 3, write ? VFIO_USER_REGION_WRITE : VFIO_USER_REGION_READ,
             vectors, write ? 3 : 2, NULL, 0, NULL, reply, length, NULL,
             NULL) < 0) {
-        err(EXIT_FAILURE, "access VRAM BAR");
+        err(EXIT_FAILURE, "access BAR%u offset %#lx", region, offset);
     }
     if (reply->count != size || reply->offset != offset) {
-        errx(EXIT_FAILURE, "invalid VRAM access reply");
+        errx(EXIT_FAILURE, "invalid BAR access reply");
     }
     if (!write) {
         memcpy(data, reply + 1, size);
     }
     free(reply);
+}
+
+static void
+write_mmio(int sock, uint64_t offset, uint32_t value)
+{
+    // Secondary MMHUBs lie beyond the vfio-user MMIO BAR.
+    if (offset >= 0x80000) {
+        write_mmio(sock, 0x30, offset);
+        offset = 0x34;
+    }
+    value = htole32(value);
+    access_bar(sock, true, VFU_PCI_DEV_BAR5_REGION_IDX, offset,
+               (uint8_t *)&value, sizeof(value));
+}
+
+static uint32_t
+read_mmio(int sock, uint64_t offset)
+{
+    if (offset >= 0x80000) {
+        write_mmio(sock, 0x30, offset);
+        offset = 0x34;
+    }
+    uint32_t value;
+    access_bar(sock, false, VFU_PCI_DEV_BAR5_REGION_IDX, offset,
+               (uint8_t *)&value, sizeof(value));
+    return le32toh(value);
+}
+
+static void
+check_mmhub(int sock)
+{
+    const uint64_t stride = 0x80000;
+    uint32_t expected[4][18] = {{0}};
+
+    for (unsigned hub = 0; hub < 4; ++hub) {
+        for (unsigned engine = 0; engine < 18; ++engine) {
+            uint64_t ack = hub * stride + 0x62f54 + engine * 4;
+            if (read_mmio(sock, ack) != 0) {
+                errx(EXIT_FAILURE, "MMHUB ACK asserted before any request");
+            }
+        }
+        write_mmio(sock, hub * stride + 0x6302c, 0x100001 + hub * 0x1000);
+    }
+    if (read_mmio(sock, 0x62ec4) != 1 ||
+        read_mmio(sock, 0xe2ec4) != 1 ||
+        read_mmio(sock, 0x62ec8) != 1 ||
+        read_mmio(sock, 0x62ec4) != 0) {
+        errx(EXIT_FAILURE, "MMHUB semaphores are aliased");
+    }
+    write_mmio(sock, 0x62ec4, 0);
+    write_mmio(sock, 0xe2ec4, 0);
+    write_mmio(sock, 0x62ec8, 0);
+    for (unsigned hub = 0; hub < 4; ++hub) {
+        if (read_mmio(sock, hub * stride + 0x6302c) !=
+            0x100001 + hub * 0x1000) {
+            errx(EXIT_FAILURE, "MMHUB page-table registers are aliased");
+        }
+        for (unsigned engine = 0; engine < 18; ++engine) {
+            uint64_t sem = hub * stride + 0x62ec4 + engine * 4;
+            if (read_mmio(sock, sem) != 1 || read_mmio(sock, sem) != 0) {
+                errx(EXIT_FAILURE, "MMHUB semaphore failed to acquire");
+            }
+            write_mmio(sock, sem, 0);
+            if (read_mmio(sock, sem) != 1) {
+                errx(EXIT_FAILURE, "MMHUB semaphore failed to release");
+            }
+            write_mmio(sock, sem, 0);
+            uint64_t req = hub * stride + 0x62f0c + engine * 4;
+            uint32_t value = 0x7c0000 | (1u << ((hub + engine) % 16));
+            write_mmio(sock, req, value);
+            expected[hub][engine] = value & 0xffff;
+            if (read_mmio(sock, req) != value) {
+                errx(EXIT_FAILURE, "MMHUB invalidate request readback failed");
+            }
+            for (unsigned other = 0; other < 4; ++other) {
+                for (unsigned eng = 0; eng < 18; ++eng) {
+                    uint64_t ack = other * stride + 0x62f54 + eng * 4;
+                    if (read_mmio(sock, ack) != expected[other][eng]) {
+                        errx(EXIT_FAILURE, "MMHUB invalidate ACK mismatch");
+                    }
+                }
+            }
+        }
+    }
+    write_mmio(sock, 0xe2f10, 0x7c8005);
+    write_mmio(sock, 0xe2f58, 0xffffffff);
+    if (read_mmio(sock, 0xe2f58) != 0x8005) {
+        errx(EXIT_FAILURE, "MMHUB multi-VMID ACK or read-only ACK failed");
+    }
+    write_mmio(sock, 0xe2f10, 0x7c0000);
+    if (read_mmio(sock, 0xe2f58) != 0) {
+        errx(EXIT_FAILURE, "MMHUB stale ACK survived a new request");
+    }
+
+    /* Indirect reads must retain the same hub identity. */
+    write_mmio(sock, 0x30, 0x1e302c);
+    if (read_mmio(sock, 0x34) != 0x103001) {
+        errx(EXIT_FAILURE, "MMHUB indirect read lost instance identity");
+    }
+    write_mmio(sock, 0x30, 0x162f4c);
+    write_mmio(sock, 0x34, 0x7c8000);
+    if (read_mmio(sock, 0x162f94) != 0x8000) {
+        errx(EXIT_FAILURE, "MMHUB indirect invalidate lost instance identity");
+    }
+    /* A fifth window is not declared and must not alias MMHUB0. */
+    write_mmio(sock, 0x30, 0x26302c);
+    write_mmio(sock, 0x34, 0xdeadbeef);
+    if (read_mmio(sock, 0x6302c) != 0x100001) {
+        errx(EXIT_FAILURE, "Undeclared MMHUB window changed MMHUB0");
+    }
+    puts("PASS: four MMHUBs, 18 engines, SEM/REQ/ACK and register isolation");
 }
 
 int
@@ -135,11 +248,13 @@ main(int argc, char **argv)
     uint8_t second[] = "protocol VRAM writes";
     uint8_t received[sizeof(first)];
     memcpy(mapping + 4096, first, sizeof(first));
-    access_bar(sock, false, 4096, received, sizeof(received));
+    access_bar(sock, false, VFU_PCI_DEV_BAR0_REGION_IDX, 4096, received,
+               sizeof(received));
     if (memcmp(received, first, sizeof(first))) {
         errx(EXIT_FAILURE, "protocol reads disagree with the mapped VRAM");
     }
-    access_bar(sock, true, 8192, second, sizeof(second));
+    access_bar(sock, true, VFU_PCI_DEV_BAR0_REGION_IDX, 8192, second,
+               sizeof(second));
     if (memcmp(mapping + 8192, second, sizeof(second))) {
         errx(EXIT_FAILURE, "mapped VRAM misses a protocol write");
     }
@@ -151,6 +266,7 @@ main(int argc, char **argv)
         memcmp(persisted, second, sizeof(second))) {
         errx(EXIT_FAILURE, "protocol writes missed the assigned pool offset");
     }
+    check_mmhub(sock);
     close(pool);
     munmap(mapping, size);
     close(descriptors[0]);

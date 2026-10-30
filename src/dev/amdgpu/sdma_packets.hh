@@ -208,9 +208,16 @@ static_assert(sizeof(sdmaMemInc) == 8);
 
 typedef struct GEM5_PACKED
 {
-    uint32_t regAddr : 18;
-    uint32_t reserved : 2;
-    uint32_t apertureId : 12;
+    union
+    {
+        struct
+        {
+            uint32_t regAddr : 18;
+            uint32_t reserved : 2;
+            uint32_t apertureId : 12;
+        };
+        uint32_t ordinal;
+    };
     uint32_t data;
 }  sdmaSRBMWrite;
 static_assert(sizeof(sdmaSRBMWrite) == 8);
