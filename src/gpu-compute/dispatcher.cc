@@ -188,6 +188,10 @@ GPUDispatcher::exec()
             break;
         }
 
+        // The CP reads kernargs through the cache after launch acquire.
+        if (!gpuCmdProc->preloadReady(task))
+            break;
+
         // kernel invalidate is done, start workgroup dispatch
         while (!task->dispComplete()) {
             // update the thread context

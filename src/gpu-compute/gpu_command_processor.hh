@@ -130,6 +130,7 @@ class GPUCommandProcessor : public DmaVirtDevice
                               uint32_t queue_id, Addr host_pkt_addr,
                               uint16_t vmid);
     void dispatchPkt(HSAQueueEntry *task);
+    bool preloadReady(HSAQueueEntry *task);
     void signalWakeupEvent(uint32_t event_id);
 
     Tick write(PacketPtr pkt) override { return 0; }
@@ -205,6 +206,9 @@ class GPUCommandProcessor : public DmaVirtDevice
 
     // Keep track of VMID for each dispatch's completion signal.
     std::unordered_map<Addr, uint16_t> dispatchVMID;
+
+    // A null descriptor marks a preload whose reads are in flight.
+    std::unordered_map<int, AMDKernelCode *> pendingPreloads;
 
     uint16_t currentDMAVMID = 1;
 
