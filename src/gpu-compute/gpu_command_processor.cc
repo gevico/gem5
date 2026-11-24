@@ -475,13 +475,12 @@ GPUCommandProcessor::dispatchKernelObject(AMDKernelCode *akc, void *raw_pkt,
         "LDS size: %d)\n", kernel_name, task->numVectorRegs(),
         task->numScalarRegs(), task->codeAddr(), 0, 0);
 
-    if (akc->kernarg_preload_spec_length == 0) {
-        initABI(task);
-
-        delete akc;
+    if (akc->kernarg_preload_spec_length) {
+        pendingPreloads.emplace(task->dispatchId(), akc);
     } else {
-        readPreload(akc, task);
+        delete akc;
     }
+    initABI(task);
 
     ++dynamic_task_id;
     if (!is_blit_kernel) ++non_blit_kernel_id;
@@ -869,6 +868,21 @@ GPUCommandProcessor::signalWakeupEvent(uint32_t event_id)
     _driver->signalWakeupEvent(event_id);
 }
 
+bool
+GPUCommandProcessor::preloadReady(HSAQueueEntry *task)
+{
+    auto it = pendingPreloads.find(task->dispatchId());
+    if (it == pendingPreloads.end())
+        return true;
+
+    if (it->second) {
+        auto *akc = it->second;
+        it->second = nullptr;
+        readPreload(akc, task);
+    }
+    return false;
+}
+
 void
 GPUCommandProcessor::readPreload(AMDKernelCode *akc, HSAQueueEntry *task)
 {
@@ -972,9 +986,9 @@ GPUCommandProcessor::initPreload(AMDKernelCode *akc, HSAQueueEntry *task)
                 i, task->preloadArgs()[i]);
     }
 
+    pendingPreloads.erase(task->dispatchId());
     delete akc;
-
-    initABI(task);
+    dispatcher.scheduleDispatch();
 }
 
 /**
